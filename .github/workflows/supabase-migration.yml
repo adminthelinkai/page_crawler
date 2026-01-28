@@ -283,3 +283,5 @@ jobs:
           echo "- Schema applied: ✅"
           echo "- RLS policies: ✅"
           echo "- Database health: ✅"
+
+# Trigger CI/CD test
