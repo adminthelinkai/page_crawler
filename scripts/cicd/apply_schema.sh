@@ -176,6 +176,11 @@ apply_schema() {
         
     local exit_code=${PIPESTATUS[0]}
     set -e # Re-enable exit on error
+
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "SSH command failed with exit code $exit_code"
+        exit $exit_code
+    fi
     
     # Check for critical errors in the log
     if grep -q "ERROR:" "${INPUT_DIR}/apply_log_${TIMESTAMP}.txt"; then
@@ -210,8 +215,16 @@ apply_seeds() {
     scp -i "${SSH_KEY}" "$seed_file" "root@${VPS_IP}:/tmp/seed_data.sql"
     
     # Apply seeds
+    set +e
     ssh -i "${SSH_KEY}" "root@${VPS_IP}" \
         "cat /tmp/seed_data.sql | docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -a 2>&1 | tee -a /var/log/supabase_seeds_debug.log"
+    local exit_code=$?
+    set -e
+    
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "Seed application failed with exit code $exit_code"
+        return 1
+    fi
         
     log_success "Seeds applied"
 }
