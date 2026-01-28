@@ -196,6 +196,26 @@ apply_schema() {
     log_success "Schema applied"
 }
 
+apply_seeds() {
+    local seed_file="$1"
+    
+    if [[ ! -f "$seed_file" ]]; then
+        log_warn "Seed file not found: $seed_file"
+        return
+    fi
+    
+    log_info "🌱 Applying seed data from $seed_file..."
+    
+    # Copy seed file to remote (using a distinct name)
+    scp -i "${SSH_KEY}" "$seed_file" "root@${VPS_IP}:/tmp/seed_data.sql"
+    
+    # Apply seeds
+    ssh -i "${SSH_KEY}" "root@${VPS_IP}" \
+        "cat /tmp/seed_data.sql | docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} -a 2>&1 | tee -a /var/log/supabase_seeds_debug.log"
+        
+    log_success "Seeds applied"
+}
+
 apply_rls_policies() {
     log_info "Applying RLS policies..."
     
@@ -290,6 +310,7 @@ main() {
     apply_schema
     apply_rls_policies
     apply_functions
+    apply_seeds "${SCRIPT_DIR}/seed_data.sql"
     cleanup_remote
     
     echo ""
