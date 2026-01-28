@@ -167,67 +167,18 @@ jobs:
           # Best effort keyscan
           ssh-keyscan -H ${{ env.PRODUCTION_VPS_IP }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Test SSH Connection to Production VPS
+      - name: Run Deployment Script
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@${{ env.PRODUCTION_VPS_IP }} "echo 'Production VPS connection successful'"
-
-      - name: Create Backup of Production Schema
-        run: |
-          echo "💾 Creating backup of production schema..."
-          
-          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
-            "docker exec ${{ env.PRODUCTION_DB_CONTAINER }} pg_dump -U postgres \
-            --schema-only \
-            -n public \
-            postgres" > ./migration_output/production_backup_$(date +%Y%m%d_%H%M%S).sql
-          
-          echo "✅ Production backup created"
-
-      - name: Apply Schema to Production
-        run: |
-          echo "🚀 Applying schema to production..."
-          
-          # Copy schema file to production server
-          scp -i ~/.ssh/deploy_key ./migration_output/schema.sql root@${{ env.PRODUCTION_VPS_IP }}:/tmp/schema_migration.sql
-          
-          # Apply schema using pg_dump's safe approach
-          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
-            "docker exec -i ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres \
-            -v ON_ERROR_STOP=0 \
-            -f /tmp/schema_migration.sql" 2>&1 || true
-          
-          echo "✅ Schema application completed"
-
-      - name: Apply RLS Policies
-        run: |
-          echo "🔒 Applying RLS policies..."
-          
-          # Copy RLS files to production
-          scp -i ~/.ssh/deploy_key ./migration_output/enable_rls.sql root@${{ env.PRODUCTION_VPS_IP }}:/tmp/enable_rls.sql
-          scp -i ~/.ssh/deploy_key ./migration_output/policies.sql root@${{ env.PRODUCTION_VPS_IP }}:/tmp/policies.sql
-          
-          # Enable RLS on tables
-          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
-            "docker exec -i ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres \
-            -f /tmp/enable_rls.sql" 2>&1 || true
-          
-          # Apply policy definitions
-          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
-            "docker exec -i ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres \
-            -f /tmp/policies.sql" 2>&1 || true
-          
-          echo "✅ RLS policies applied"
-
-      - name: Cleanup Temporary Files
-        run: |
-          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
-            "rm -f /tmp/schema_migration.sql /tmp/enable_rls.sql /tmp/policies.sql"
+          chmod +x ./scripts/cicd/apply_schema.sh
+          ./scripts/cicd/apply_schema.sh
 
       - name: Upload Production Backup
         uses: actions/upload-artifact@v4
         with:
           name: production-backup
-          path: ./migration_output/production_backup_*.sql
+          path: ./backups/production_backup_*.sql
           retention-days: 30
 
   validate-deployment:
