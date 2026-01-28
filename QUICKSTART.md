@@ -71,4 +71,4 @@ Edit `config.py` to customize:
 
 AI analysis was removed due to API rate limits. The crawler now outputs all keyword-gated articles directly for manual or downstream review.
 
-<!-- CI/CD Trigger: Verification Run 2026-01-28 Retry 3 -->
+<!-- CI/CD Trigger: Verification Run 2026-01-28 Retry 4 - Debug & Seed -->
