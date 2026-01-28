@@ -123,10 +123,20 @@ jobs:
             echo "⚠️ Warning: No table definitions found in schema"
           fi
           
-          # Check for dangerous operations
-          if grep -qi "DROP DATABASE\|TRUNCATE\|DELETE FROM" ./migration_output/schema.sql; then
-            echo "❌ DANGER: Found destructive operations in schema!"
+          # Check for destructive operations (with context)
+          # We purposefully allow DELETE/TRUNCATE as they might be in function definitions
+          # We strictly block DROP DATABASE
+          if grep -qi "DROP DATABASE" ./migration_output/schema.sql; then
+            echo "❌ DANGER: Found 'DROP DATABASE' in schema!"
+            grep -i "DROP DATABASE" ./migration_output/schema.sql
             exit 1
+          fi
+
+          # Warn on other potentially destructive operations but don't fail
+          # (Triggered by function definitions or comments)
+          if grep -qiE "TRUNCATE|DELETE FROM" ./migration_output/schema.sql; then
+            echo "⚠️  Warning: Found 'TRUNCATE' or 'DELETE FROM' in schema (likely in functions/triggers)"
+            grep -iE "TRUNCATE|DELETE FROM" ./migration_output/schema.sql | head -n 5
           fi
           
           echo "✅ Schema validation passed"
