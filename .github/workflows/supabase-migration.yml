@@ -157,6 +157,9 @@ jobs:
           name: migration-files
           path: ./migration_output/
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Setup SSH Key
         env:
           SSH_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
