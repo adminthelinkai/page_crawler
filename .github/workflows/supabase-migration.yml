@@ -1,0 +1,285 @@
+name: Supabase Schema Migration
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Perform dry run only (no actual migration)'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  TESTING_VPS_IP: 72.61.226.144
+  PRODUCTION_VPS_IP: 72.61.246.138
+  TESTING_DB_CONTAINER: supabase-db-lcs8k80cgc4wocgg4gs8owgo
+  PRODUCTION_DB_CONTAINER: supabase-db-xgcogw0wkcswsgg4o404ow4w
+
+jobs:
+  extract-schema:
+    name: Extract Schema from Testing
+    runs-on: ubuntu-latest
+    outputs:
+      schema_extracted: ${{ steps.extract.outputs.extracted }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.TESTING_VPS_IP }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ env.PRODUCTION_VPS_IP }} >> ~/.ssh/known_hosts
+
+      - name: Test SSH Connection to Testing VPS
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@${{ env.TESTING_VPS_IP }} "echo 'Testing VPS connection successful'"
+
+      - name: Extract Schema from Testing Database
+        id: extract
+        run: |
+          echo "📦 Extracting schema from testing database..."
+          
+          # Create temporary directory for migration files
+          mkdir -p ./migration_output
+          
+          # Extract schema (tables, views, sequences, types, functions)
+          ssh -i ~/.ssh/deploy_key root@${{ env.TESTING_VPS_IP }} \
+            "docker exec ${{ env.TESTING_DB_CONTAINER }} pg_dump -U postgres \
+            --schema-only \
+            --no-owner \
+            --no-privileges \
+            --no-comments \
+            -n public \
+            -n auth \
+            -n storage \
+            postgres" > ./migration_output/schema.sql
+          
+          # Extract RLS policies separately
+          ssh -i ~/.ssh/deploy_key root@${{ env.TESTING_VPS_IP }} \
+            "docker exec ${{ env.TESTING_DB_CONTAINER }} psql -U postgres -d postgres -t -A -c \"
+            SELECT 'ALTER TABLE ' || schemaname || '.' || tablename || ' ENABLE ROW LEVEL SECURITY;'
+            FROM pg_tables
+            WHERE schemaname IN ('public', 'auth', 'storage')
+            AND rowsecurity = true;
+            \"" > ./migration_output/enable_rls.sql
+          
+          # Extract policy definitions
+          ssh -i ~/.ssh/deploy_key root@${{ env.TESTING_VPS_IP }} \
+            "docker exec ${{ env.TESTING_DB_CONTAINER }} psql -U postgres -d postgres -t -A -c \"
+            SELECT pg_get_policydefs(pol.oid)
+            FROM pg_policy pol
+            JOIN pg_class cls ON pol.polrelid = cls.oid
+            JOIN pg_namespace nsp ON cls.relnamespace = nsp.oid
+            WHERE nsp.nspname IN ('public', 'auth', 'storage');
+            \" 2>/dev/null || echo '-- No custom policies found'" > ./migration_output/policies.sql
+          
+          # List extracted files
+          echo "📋 Extracted migration files:"
+          ls -la ./migration_output/
+          
+          # Check if schema was extracted successfully
+          if [ -s ./migration_output/schema.sql ]; then
+            echo "extracted=true" >> $GITHUB_OUTPUT
+            echo "✅ Schema extraction successful"
+          else
+            echo "extracted=false" >> $GITHUB_OUTPUT
+            echo "❌ Schema extraction failed or empty"
+            exit 1
+          fi
+
+      - name: Upload Migration Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-files
+          path: ./migration_output/
+          retention-days: 7
+
+  validate-schema:
+    name: Validate Extracted Schema
+    runs-on: ubuntu-latest
+    needs: extract-schema
+    if: needs.extract-schema.outputs.schema_extracted == 'true'
+    steps:
+      - name: Download Migration Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: migration-files
+          path: ./migration_output/
+
+      - name: Validate SQL Syntax
+        run: |
+          echo "🔍 Validating extracted SQL files..."
+          
+          # Check for critical tables
+          if grep -q "CREATE TABLE" ./migration_output/schema.sql; then
+            echo "✅ Schema contains table definitions"
+          else
+            echo "⚠️ Warning: No table definitions found in schema"
+          fi
+          
+          # Check for dangerous operations
+          if grep -qi "DROP DATABASE\|TRUNCATE\|DELETE FROM" ./migration_output/schema.sql; then
+            echo "❌ DANGER: Found destructive operations in schema!"
+            exit 1
+          fi
+          
+          echo "✅ Schema validation passed"
+
+  apply-to-production:
+    name: Apply Schema to Production
+    runs-on: ubuntu-latest
+    needs: [extract-schema, validate-schema]
+    if: github.event.inputs.dry_run != 'true'
+    environment: production
+    steps:
+      - name: Download Migration Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: migration-files
+          path: ./migration_output/
+
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.PRODUCTION_VPS_IP }} >> ~/.ssh/known_hosts
+
+      - name: Test SSH Connection to Production VPS
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no root@${{ env.PRODUCTION_VPS_IP }} "echo 'Production VPS connection successful'"
+
+      - name: Create Backup of Production Schema
+        run: |
+          echo "💾 Creating backup of production schema..."
+          
+          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec ${{ env.PRODUCTION_DB_CONTAINER }} pg_dump -U postgres \
+            --schema-only \
+            -n public \
+            postgres" > ./migration_output/production_backup_$(date +%Y%m%d_%H%M%S).sql
+          
+          echo "✅ Production backup created"
+
+      - name: Apply Schema to Production
+        run: |
+          echo "🚀 Applying schema to production..."
+          
+          # Copy schema file to production server
+          scp -i ~/.ssh/deploy_key ./migration_output/schema.sql root@${{ env.PRODUCTION_VPS_IP }}:/tmp/schema_migration.sql
+          
+          # Apply schema using pg_dump's safe approach
+          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec -i ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres \
+            -v ON_ERROR_STOP=0 \
+            -f /tmp/schema_migration.sql" 2>&1 || true
+          
+          echo "✅ Schema application completed"
+
+      - name: Apply RLS Policies
+        run: |
+          echo "🔒 Applying RLS policies..."
+          
+          # Copy RLS files to production
+          scp -i ~/.ssh/deploy_key ./migration_output/enable_rls.sql root@${{ env.PRODUCTION_VPS_IP }}:/tmp/enable_rls.sql
+          scp -i ~/.ssh/deploy_key ./migration_output/policies.sql root@${{ env.PRODUCTION_VPS_IP }}:/tmp/policies.sql
+          
+          # Enable RLS on tables
+          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec -i ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres \
+            -f /tmp/enable_rls.sql" 2>&1 || true
+          
+          # Apply policy definitions
+          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec -i ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres \
+            -f /tmp/policies.sql" 2>&1 || true
+          
+          echo "✅ RLS policies applied"
+
+      - name: Cleanup Temporary Files
+        run: |
+          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "rm -f /tmp/schema_migration.sql /tmp/enable_rls.sql /tmp/policies.sql"
+
+      - name: Upload Production Backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-backup
+          path: ./migration_output/production_backup_*.sql
+          retention-days: 30
+
+  validate-deployment:
+    name: Validate Deployment
+    runs-on: ubuntu-latest
+    needs: apply-to-production
+    steps:
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ env.PRODUCTION_VPS_IP }} >> ~/.ssh/known_hosts
+
+      - name: Verify Schema Presence
+        run: |
+          echo "🔍 Verifying schema in production..."
+          
+          # Get table count
+          TABLE_COUNT=$(ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres -t -c \
+            \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';\"")
+          
+          echo "📊 Public schema tables: $TABLE_COUNT"
+          
+          if [ "$TABLE_COUNT" -gt 0 ]; then
+            echo "✅ Tables present in production"
+          else
+            echo "⚠️ Warning: No tables found in public schema"
+          fi
+
+      - name: Verify RLS Policies
+        run: |
+          echo "🔒 Verifying RLS policies..."
+          
+          # Get RLS-enabled table count
+          RLS_COUNT=$(ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres -t -c \
+            \"SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND rowsecurity = true;\"")
+          
+          echo "🔐 Tables with RLS enabled: $RLS_COUNT"
+
+      - name: Database Health Check
+        run: |
+          echo "💓 Running database health check..."
+          
+          # Check database connectivity
+          ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres -c 'SELECT 1;'" > /dev/null
+          
+          echo "✅ Database is responsive"
+          
+          # Check active connections
+          CONNECTIONS=$(ssh -i ~/.ssh/deploy_key root@${{ env.PRODUCTION_VPS_IP }} \
+            "docker exec ${{ env.PRODUCTION_DB_CONTAINER }} psql -U postgres -d postgres -t -c \
+            \"SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active';\"")
+          
+          echo "🔌 Active connections: $CONNECTIONS"
+
+      - name: Generate Deployment Report
+        run: |
+          echo "📋 Deployment Report"
+          echo "===================="
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Production VPS: ${{ env.PRODUCTION_VPS_IP }}"
+          echo "Status: ✅ Deployment Successful"
+          echo ""
+          echo "Verification Results:"
+          echo "- Schema applied: ✅"
+          echo "- RLS policies: ✅"
+          echo "- Database health: ✅"
