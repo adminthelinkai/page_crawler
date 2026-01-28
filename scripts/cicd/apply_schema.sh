@@ -41,11 +41,12 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 check_ssh_connection() {
     log_info "Checking SSH connection to ${VPS_IP}..."
-    if ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "root@${VPS_IP}" "echo 'Connection OK'" > /dev/null 2>&1; then
+    if out=$(ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -v "root@${VPS_IP}" "echo 'Connection OK'" 2>&1); then
         log_success "SSH connection successful"
         return 0
     else
         log_error "Failed to connect to ${VPS_IP}"
+        echo "$out"
         return 1
     fi
 }
