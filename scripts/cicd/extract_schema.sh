@@ -75,7 +75,7 @@ extract_schema() {
         -n public \
         -n auth \
         -n storage \
-        ${DB_NAME}" > "${OUTPUT_DIR}/schema_${TIMESTAMP}.sql"
+        ${DB_NAME} | sed -E 's/^CREATE SCHEMA (public|auth|storage);$/-- &/' | sed -E 's/^ALTER SCHEMA (public|auth|storage) OWNER TO .*$/-- &/' > "${OUTPUT_DIR}/schema_${TIMESTAMP}.sql"
     
     if [[ -s "${OUTPUT_DIR}/schema_${TIMESTAMP}.sql" ]]; then
         log_success "Schema extracted: ${OUTPUT_DIR}/schema_${TIMESTAMP}.sql"
