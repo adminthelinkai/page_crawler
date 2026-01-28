@@ -169,9 +169,9 @@ apply_schema() {
     
     set +e # Temporarily disable exit on error for the psql command
     
+    # Pipe the file content into the container
     ssh -i "${SSH_KEY}" "root@${VPS_IP}" \
-        "docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} \
-        -f /tmp/schema_migration.sql 2>&1" | tee "${INPUT_DIR}/apply_log_${TIMESTAMP}.txt"
+        "cat /tmp/schema_migration.sql | docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} 2>&1" | tee "${INPUT_DIR}/apply_log_${TIMESTAMP}.txt"
         
     local exit_code=${PIPESTATUS[0]}
     set -e # Re-enable exit on error
