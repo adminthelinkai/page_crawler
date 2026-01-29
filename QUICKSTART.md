@@ -69,6 +69,51 @@ Edit `config.py` to customize:
 
 ## 📌 Note
 
+## 🔄 Manual Supabase Migrations (NEW)
+
+**Workflow:** Testing VPS → Generate SQL → Production VPS
+
+### Initial Setup (One-Time)
+
+```bash
+# SSH into Testing VPS
+ssh -i ~/.ssh/github_deploy_key root@72.61.226.144
+
+# Run setup script (installs Supabase CLI)
+cd /root
+git clone https://github.com/adminthelinkai/page_crawler.git
+cd page_crawler
+./scripts/manual_migration/setup_manual_migration.sh
+
+# Update database passwords
+nano ~/supabase-migrations/.env
+```
+
+### Regular Workflow
+
+1. **Make schema changes** in Testing Supabase
+2. **Generate migration** (on Testing VPS):
+   ```bash
+   cd ~/supabase-migrations
+   source .env
+   export DATABASE_URL=$TESTING_DB_URL
+   supabase db diff -f my_feature --schema public,auth,storage
+   ```
+3. **Review** generated SQL in `supabase/migrations/`
+4. **Apply to Production** (on Testing VPS):
+   ```bash
+   export DATABASE_URL=$PRODUCTION_DB_URL
+   supabase db push
+   ```
+
+📖 **Full guide:** [docs/MIGRATION_GUIDE.md](docs/MIGRATION_GUIDE.md)
+
+---
+
+## 🗂️ Legacy CI/CD Files
+
+The automated CI/CD pipeline (`.github/workflows/supabase-migration.yml`) is deprecated due to connectivity issues. Use manual migrations instead.
+
 AI analysis was removed due to API rate limits. The crawler now outputs all keyword-gated articles directly for manual or downstream review.
 
 <!-- CI/CD Trigger: Verification Run 2026-01-28 Retry 8 - Debug SSH -->
