@@ -1,9 +1,8 @@
 name: Manual Supabase Migration
 
 on:
-  push:
-    branches:
-      - master
+  # GitHub Actions cannot connect to VPS due to firewall
+  # Use manual SSH commands from local PC instead
   workflow_dispatch:
     inputs:
       table_name:
