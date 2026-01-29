@@ -1,0 +1,58 @@
+name: Manual Supabase Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      table_name:
+        description: 'Table name to migrate (e.g., users_test)'
+        required: true
+        type: string
+
+jobs:
+  migrate:
+    name: Migrate Schema to Production
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 72.61.226.144 >> ~/.ssh/known_hosts
+          ssh-keyscan -H 72.61.246.138 >> ~/.ssh/known_hosts
+
+      - name: Generate Migration
+        run: |
+          echo "📦 Generating migration for table: ${{ inputs.table_name }}"
+          ssh -i ~/.ssh/id_rsa root@72.61.226.144 \
+            "docker exec supabase-db-lcs8k80cgc4wocgg4gs8owgo \
+             pg_dump -U postgres --schema-only --no-owner --no-privileges \
+             -n public -t public.${{ inputs.table_name }} postgres \
+             > /root/migrations/${{ inputs.table_name }}_migration.sql"
+          
+          echo "✅ Migration file created"
+
+      - name: Preview Migration
+        run: |
+          echo "📄 Migration preview:"
+          ssh -i ~/.ssh/id_rsa root@72.61.226.144 \
+            "head -n 20 /root/migrations/${{ inputs.table_name }}_migration.sql"
+
+      - name: Apply to Production
+        run: |
+          echo "🚀 Applying migration to Production..."
+          ssh -i ~/.ssh/id_rsa root@72.61.226.144 \
+            "cat /root/migrations/${{ inputs.table_name }}_migration.sql" | \
+          ssh -i ~/.ssh/id_rsa root@72.61.246.138 \
+            "docker exec -i supabase-db-xgcogw0wkcswsgg4o404ow4w \
+             psql -U postgres -d postgres"
+          
+          echo "✅ Migration applied successfully"
+
+      - name: Verify
+        run: |
+          echo "🔍 Verifying table exists in Production..."
+          ssh -i ~/.ssh/id_rsa root@72.61.246.138 \
+            "docker exec -i supabase-db-xgcogw0wkcswsgg4o404ow4w \
+             psql -U postgres -d postgres -c '\\dt public.${{ inputs.table_name }}'"
